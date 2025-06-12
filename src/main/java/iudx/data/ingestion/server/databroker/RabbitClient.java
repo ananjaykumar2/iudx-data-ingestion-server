@@ -46,16 +46,17 @@ public class RabbitClient {
     LOGGER.info("Sending each message separately to exchange: {}, with routing key: {}", exchangeName, routingKey);
 
     // Iterate over each JSON object in the array
-    request.forEach(item -> {
-      if (item instanceof JsonObject) {
-        JsonObject jsonObject = (JsonObject) item;
-        String publishID = java.util.UUID.randomUUID().toString();
-        jsonObject.put("publishID", publishID);
-        jsonObject.put("provider",ownerId);
-        publishIds.add(publishID);
-        
-        // Publish each JSON object separately
-        client.basicPublish(
+    request.forEach(
+        item -> {
+          if (item instanceof JsonObject) {
+            JsonObject jsonObject = (JsonObject) item;
+            String publishID = java.util.UUID.randomUUID().toString();
+            jsonObject.put("publishID", publishID);
+            jsonObject.put("provider", ownerId);
+            publishIds.add(publishID);
+            LOGGER.debug("Publishing message with provider {}; publishID: {}", ownerId, publishID);
+            // Publish each JSON object separately
+            client.basicPublish(
                 exchangeName,
                 routingKey,
                 jsonObject.toBuffer(),
@@ -63,11 +64,12 @@ public class RabbitClient {
                   if (asyncResult.succeeded()) {
                     LOGGER.info("Message with publishID {} sent successfully", publishID);
                   } else {
-                    LOGGER.error("Failed to send message with publishID {}", publishID, asyncResult.cause());
+                    LOGGER.error(
+                        "Failed to send message with publishID {}", publishID, asyncResult.cause());
                   }
                 });
-      }
-    });
+          }
+        });
 
     // Complete the promise after all messages are processed
     promise.complete(publishIds);
