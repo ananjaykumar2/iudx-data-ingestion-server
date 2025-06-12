@@ -22,6 +22,10 @@ import iudx.data.ingestion.server.authenticator.authorization.JwtAuthorization;
 import iudx.data.ingestion.server.authenticator.authorization.Method;
 import iudx.data.ingestion.server.authenticator.model.JwtData;
 import iudx.data.ingestion.server.common.Api;
+
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.concurrent.TimeUnit;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -99,13 +103,20 @@ public class JwtAuthenticationServiceImpl implements AuthenticationService {
     Promise<JwtData> promise = Promise.promise();
     TokenCredentials creds = new TokenCredentials(jwtToken);
 
-    jwtAuth.authenticate(creds).onSuccess(user -> {
-      JwtData jwtData = new JwtData(user.principal());
-      promise.complete(jwtData);
-    }).onFailure(err -> {
-      LOGGER.error("failed to decode/validate jwt token : " + err.getMessage());
-      promise.fail("failed");
-    });
+    jwtAuth
+        .authenticate(creds)
+        .onSuccess(
+            user -> {
+              JwtData jwtData = new JwtData(user.principal());
+              jwtData.setExp(user.get("exp"));
+              jwtData.setIat(user.get("iat"));
+              promise.complete(jwtData);
+            })
+        .onFailure(
+            err -> {
+              LOGGER.error("failed to decode/validate jwt token : " + err.getMessage());
+              promise.fail("failed");
+            });
 
     return promise.future();
   }
@@ -127,11 +138,16 @@ public class JwtAuthenticationServiceImpl implements AuthenticationService {
       JsonObject jsonResponse = new JsonObject();
       jsonResponse.put(JSON_IID, jwtId);
       jsonResponse.put(JSON_USERID, jwtData.getSub());
-      if (jwtData.getRole().equalsIgnoreCase(JSON_PROVIDER)) {
-        jsonResponse.put(JSON_PROVIDER, jwtData.getSub());
-      } else if (jwtData.getRole().equalsIgnoreCase(JSON_DELEGATE)) {
-        jsonResponse.put(JSON_DELEGATE, jwtData.getSub());
-      }
+      jsonResponse.put(JSON_IID, jwtId);
+      jsonResponse.put(JSON_ROLE, jwtData.getRole());
+      jsonResponse.put(JSON_DRL, jwtData.getDrl());
+      jsonResponse.put(JSON_DID, jwtData.getDid());
+      jsonResponse.put(
+              JSON_EXPIRY,
+              LocalDateTime.ofInstant(
+                              Instant.ofEpochSecond(Long.parseLong(jwtData.getExp().toString())),
+                              ZoneId.systemDefault())
+                      .toString());
       promise.complete(jsonResponse);
     } else {
       LOGGER.info("failed");
