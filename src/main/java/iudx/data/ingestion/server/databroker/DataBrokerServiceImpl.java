@@ -1,6 +1,5 @@
 package iudx.data.ingestion.server.databroker;
 
-import static iudx.data.ingestion.server.databroker.util.Constants.CACHE_TIMEOUT_AMOUNT;
 import static iudx.data.ingestion.server.databroker.util.Constants.DOES_EXCHANGE_EXIST;
 import static iudx.data.ingestion.server.databroker.util.Constants.ERROR;
 import static iudx.data.ingestion.server.databroker.util.Constants.ERROR_MESSAGE;
@@ -23,7 +22,6 @@ import io.vertx.core.json.JsonObject;
 import io.vertx.rabbitmq.RabbitMQClient;
 import io.vertx.rabbitmq.RabbitMQOptions;
 import iudx.data.ingestion.server.databroker.util.Util;
-import java.util.concurrent.TimeUnit;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -51,51 +49,51 @@ public class DataBrokerServiceImpl implements DataBrokerService {
     rabbitClient.populateExchangeCache(dataBrokerVhost, exchangeListCache);
   }
 
-    @Override
-    public DataBrokerService publishData(JsonArray request, JsonObject metadata, Handler<AsyncResult<JsonArray>> handler) {
-        LOGGER.debug("Info: DataBrokerServiceImpl#publishData() started");
+  @Override
+  public DataBrokerService publishData(
+      JsonArray request, JsonObject metadata, Handler<AsyncResult<JsonArray>> handler) {
+    LOGGER.debug("Info: DataBrokerServiceImpl#publishData() started");
 
-        if (request == null || request.isEmpty()) {
-            handler.handle(Future.failedFuture("Bad Request: Request Json is empty"));
-            return this;
-        }
-
-        try {
-            JsonObject metaData = Util.getMetadata(metadata);
-            String exchange = metaData.getString(EXCHANGE_NAME);
-            Boolean doesExchangeExist = exchangeListCache.getIfPresent(exchange);
-
-            rabbitClient
-                    .getExchange(exchange, dataBrokerVhost, doesExchangeExist)
-                    .compose(
-                            ar -> {
-                                if (!ar.getBoolean(DOES_EXCHANGE_EXIST, false)) {
-                                    return Future.failedFuture(
-                                            "Exchange doesn't exist for provided Resource item");
-                                }
-
-                                exchangeListCache.put(exchange, true);
-                                return rabbitClient.publishMessage(request, metaData);
-                            })
-                    .onSuccess(
-                            success -> {
-                                LOGGER.debug("Info: Message published successfully" + success);
-                                handler.handle(
-                                        Future.succeededFuture(success));
-                            })
-                    .onFailure(
-                            error -> {
-                                LOGGER.error("Error in publishData: {}", error.getMessage());
-                                handler.handle(Future.failedFuture(error.getMessage()));
-                            });
-
-        } catch (Exception e) {
-            LOGGER.error("Unexpected error in publishData: {}", e.getMessage());
-            handler.handle(Future.failedFuture(e.getMessage()));
-        }
-
-        return this;
+    if (request == null || request.isEmpty()) {
+      handler.handle(Future.failedFuture("Bad Request: Request Json is empty"));
+      return this;
     }
+
+    try {
+      JsonObject metaData = Util.getMetadata(metadata);
+      String exchange = metaData.getString(EXCHANGE_NAME);
+      Boolean doesExchangeExist = exchangeListCache.getIfPresent(exchange);
+
+      rabbitClient
+          .getExchange(exchange, dataBrokerVhost, doesExchangeExist)
+          .compose(
+              ar -> {
+                if (!ar.getBoolean(DOES_EXCHANGE_EXIST, false)) {
+                  return Future.failedFuture("Exchange doesn't exist for provided Resource item");
+                }
+
+                exchangeListCache.put(exchange, true);
+                return rabbitClient.publishMessage(request, metaData);
+              })
+          .onSuccess(
+              success -> {
+                LOGGER.debug("Info: Message published successfully" + success);
+                handler.handle(Future.succeededFuture(success));
+              })
+          .onFailure(
+              error -> {
+                LOGGER.error("Error in publishData: {}", error.getMessage());
+                handler.handle(Future.failedFuture(error.getMessage()));
+              });
+
+    } catch (Exception e) {
+      LOGGER.error("Unexpected error in publishData: {}", e.getMessage());
+      handler.handle(Future.failedFuture(e.getMessage()));
+    }
+
+    return this;
+  }
+
   @Override
   public DataBrokerService ingestDataPost(
       JsonObject request, Handler<AsyncResult<JsonObject>> handler) {
@@ -147,31 +145,45 @@ public class DataBrokerServiceImpl implements DataBrokerService {
   }
 
   @Override
-  public DataBrokerService ingestDataDelete(JsonObject request,
-                                            Handler<AsyncResult<JsonObject>> handler) {
+  public DataBrokerService ingestDataDelete(
+      JsonObject request, Handler<AsyncResult<JsonObject>> handler) {
     LOGGER.debug("Info: DataBrokerServiceImpl#ingestDataDelete() started");
     if (request != null && !request.isEmpty()) {
       JsonObject metaData = Util.getMetadata(request.getJsonObject("catItem"));
       String exchangeName = metaData.getString(EXCHANGE_NAME);
-      rabbitClient.deleteExchange(exchangeName, dataBrokerVhost).onSuccess(ar -> {
-        LOGGER.debug("Deletion of exchange successful");
-        exchangeListCache.invalidate(exchangeName);
-        handler.handle(Future.succeededFuture(new JsonObject().mergeIn(ar)));
-      }).onFailure(ar -> {
-        LOGGER.debug("Could not delete exchange due to: {}", ar.getCause().toString());
-        handler.handle(Future.succeededFuture(new JsonObject().put(TYPE, FAILURE)
-            .put(ERROR_MESSAGE, ar.getCause().getLocalizedMessage())));
-      });
+      rabbitClient
+          .deleteExchange(exchangeName, dataBrokerVhost)
+          .onSuccess(
+              ar -> {
+                LOGGER.debug("Deletion of exchange successful");
+                exchangeListCache.invalidate(exchangeName);
+                handler.handle(Future.succeededFuture(new JsonObject().mergeIn(ar)));
+              })
+          .onFailure(
+              ar -> {
+                LOGGER.debug("Could not delete exchange due to: {}", ar.getCause().toString());
+                handler.handle(
+                    Future.succeededFuture(
+                        new JsonObject()
+                            .put(TYPE, FAILURE)
+                            .put(ERROR_MESSAGE, ar.getCause().getLocalizedMessage())));
+              });
     } else {
-      handler.handle(Future.succeededFuture(new JsonObject().put(TYPE, FAILURE)
-          .put(ERROR_MESSAGE, "Bad Request: Request Json empty")));
+      handler.handle(
+          Future.succeededFuture(
+              new JsonObject()
+                  .put(TYPE, FAILURE)
+                  .put(ERROR_MESSAGE, "Bad Request: Request Json empty")));
     }
     return this;
   }
 
   @Override
-  public DataBrokerService publishMessage(JsonObject body, String toExchange, String routingKey,
-                                          Handler<AsyncResult<JsonObject>> handler) {
+  public DataBrokerService publishMessage(
+      JsonObject body,
+      String toExchange,
+      String routingKey,
+      Handler<AsyncResult<JsonObject>> handler) {
     Future<Void> rabbitMqClientStartFuture;
     Buffer buffer = Buffer.buffer(body.toString());
 
@@ -180,15 +192,17 @@ public class DataBrokerServiceImpl implements DataBrokerService {
     } else {
       rabbitMqClientStartFuture = Future.succeededFuture();
     }
-    rabbitMqClientStartFuture.compose(
-            rabbitStartupFuture -> client.basicPublish(toExchange, routingKey, buffer))
-        .onSuccess(successHandler -> {
-          handler.handle(Future.succeededFuture());
-        }).onFailure(failureHandler -> {
-          LOGGER.error(failureHandler);
-          handler.handle(Future.failedFuture(failureHandler.getCause()));
-        });
+    rabbitMqClientStartFuture
+        .compose(rabbitStartupFuture -> client.basicPublish(toExchange, routingKey, buffer))
+        .onSuccess(
+            successHandler -> {
+              handler.handle(Future.succeededFuture());
+            })
+        .onFailure(
+            failureHandler -> {
+              LOGGER.error(failureHandler);
+              handler.handle(Future.failedFuture(failureHandler.getCause()));
+            });
     return this;
   }
-
 }
