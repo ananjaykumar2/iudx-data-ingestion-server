@@ -28,9 +28,11 @@ import static iudx.data.ingestion.server.apiserver.util.Constants.RESPONSE_SIZE;
 import static iudx.data.ingestion.server.apiserver.util.Constants.ROUTE_DOC;
 import static iudx.data.ingestion.server.apiserver.util.Constants.ROUTE_STATIC_SPEC;
 import static iudx.data.ingestion.server.apiserver.util.Constants.USER_ID;
+import static iudx.data.ingestion.server.authenticator.Constants.*;
 import static iudx.data.ingestion.server.metering.util.Constants.PRIMARY_KEY;
 import static iudx.data.ingestion.server.metering.util.Constants.PROVIDER_ID;
 import static iudx.data.ingestion.server.metering.util.Constants.RESULTS;
+import static iudx.data.ingestion.server.metering.util.Constants.TYPE_KEY;
 
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.Future;
@@ -250,54 +252,76 @@ public class ApiServerVerticle extends AbstractVerticle {
     JsonArray request =  routingContext.body().asJsonArray();
     String id = request.getJsonObject(0).getString(ID);
     HttpServerResponse response = routingContext.response();
+    JsonObject authInfo = (JsonObject) routingContext.data().get("authInfo");
 
-    catalogueService.getCatItem(id).onComplete(catRsp -> {
-      if (catRsp.succeeded()) {
-        LOGGER.info("Success: ID Found in Catalogue.");
-        JsonObject catItemJson = catRsp.result();
-        databroker.publishData(request, catItemJson, handler -> {
-          if (handler.succeeded()) {
-            LOGGER.info("Success: Ingestion Success");
+    LOGGER.debug("authInfo: {}", authInfo.encodePrettily());
 
-            JsonObject authInfo = (JsonObject) routingContext.data().get("authInfo");
-            authInfo.mergeIn(catItemJson);
+    catalogueService
+        .getCatItem(id)
+        .onComplete(
+            catRsp -> {
+              if (catRsp.succeeded()) {
+                LOGGER.info("Success: ID Found in Catalogue.");
+                JsonObject catItemJson = catRsp.result();
+                String ownerId = null;
+                if (authInfo.getString(JSON_ROLE).equalsIgnoreCase("delegate")) {
+                  ownerId = authInfo.getString("did");
+                } else if (authInfo.getString(JSON_ROLE).equalsIgnoreCase("provider")) {
+                  ownerId = authInfo.getString("userid");
+                }
+                catItemJson.put("ownerId", ownerId);
+                databroker.publishData(
+                    request,
+                    catItemJson,
+                    handler -> {
+                      if (handler.succeeded()) {
+                        LOGGER.info("Success: Ingestion Success");
 
-            Future.future(fu -> updateAuditTable(authInfo));
+                        LOGGER.debug("catItemJson: {}", catItemJson.encodePrettily());
 
-            JsonObject responseJson = new JsonObject()
-                    .put(JSON_TYPE, SUCCESS.getUrn())
-                    .put(JSON_TITLE, SUCCESS.getMessage())
-                    .put(RESULTS, new JsonArray().add(
+                        authInfo.mergeIn(catItemJson);
+
+                        Future.future(fu -> updateAuditTable(routingContext));
+
+                        JsonObject responseJson =
                             new JsonObject()
-                                    .put("detail", "message published successfully, ingestion success")
-                                    .put("publishID", handler.result())
-                    ));
+                                .put(JSON_TYPE, SUCCESS.getUrn())
+                                .put(JSON_TITLE, SUCCESS.getMessage())
+                                .put(
+                                    RESULTS,
+                                    new JsonArray()
+                                        .add(
+                                            new JsonObject()
+                                                .put(
+                                                    "detail",
+                                                    "message published successfully, ingestion success")
+                                                .put("publishID", handler.result())));
 
-            handleSuccessResponse(response, 201, responseJson.encode());
+                        handleSuccessResponse(response, 201, responseJson.encode());
 
-          } else {
-            LOGGER.error("Fail: Ingestion Fail - {}", handler.cause().getMessage());
+                      } else {
+                        LOGGER.error("Fail: Ingestion Fail - {}", handler.cause().getMessage());
 
-            handleFailedResponse(
+                        handleFailedResponse(
+                            response,
+                            HttpStatusCode.getByValue(400),
+                            ResponseUrn.INVALID_PAYLOAD_FORMAT,
+                            handler.cause().getMessage());
+                      }
+                    });
+
+              } else {
+                LOGGER.error(
+                    "Fail: ID does not exist in Catalogue - {}", catRsp.cause().getMessage());
+
+                handleFailedResponse(
                     response,
-                    HttpStatusCode.getByValue(400),
-                    ResponseUrn.INVALID_PAYLOAD_FORMAT,
-                    handler.cause().getMessage());
-          }
-        });
-
-      } else {
-        LOGGER.error("Fail: ID does not exist in Catalogue - {}", catRsp.cause().getMessage());
-
-        handleFailedResponse(
-                response,
-                HttpStatusCode.getByValue(404),
-                ResponseUrn.RESOURCE_NOT_FOUND,
-                "ID does not exist in catalogue");
-      }
-    });
+                    HttpStatusCode.getByValue(404),
+                    ResponseUrn.RESOURCE_NOT_FOUND,
+                    "ID does not exist in catalogue");
+              }
+            });
   }
-
   public void handleIngestPostQuery(RoutingContext routingContext) {
     LOGGER.debug("Info:handleIngestPostQuery method started.");
     JsonObject requestJson = routingContext.getBodyAsJson();
@@ -318,7 +342,7 @@ public class ApiServerVerticle extends AbstractVerticle {
             LOGGER.info("Success: Ingestion Success");
             JsonObject authInfo = (JsonObject) routingContext.data().get("authInfo");
             authInfo.mergeIn(catItemJson);
-            Future.future(fu -> updateAuditTable(authInfo));
+            Future.future(fu -> updateAuditTable(routingContext));
             JsonObject responseJson = new JsonObject()
                 .put(JSON_TYPE, SUCCESS.getUrn())
                 .put(JSON_TITLE, SUCCESS.getMessage())
@@ -358,7 +382,7 @@ public class ApiServerVerticle extends AbstractVerticle {
             LOGGER.info("Success: Ingestion Success");
             JsonObject authInfo = (JsonObject) routingContext.data().get("authInfo");
             authInfo.mergeIn(catItemJson);
-            Future.future(fu -> updateAuditTable(authInfo));
+            Future.future(fu -> updateAuditTable(routingContext));
             JsonObject responseJson = new JsonObject()
                 .put(JSON_TYPE, SUCCESS.getUrn())
                 .put(JSON_TITLE, SUCCESS.getMessage())
@@ -410,40 +434,62 @@ public class ApiServerVerticle extends AbstractVerticle {
         statusCode.getDescription());
   }
 
-  private Future<Void> updateAuditTable(JsonObject auditJson) {
-    final Promise<Void> promise = Promise.promise();
-    ZonedDateTime zst = ZonedDateTime.now(ZoneId.of("Asia/Kolkata"));
-    long time = zst.toInstant().toEpochMilli();
-    String isoTime =
-        LocalDateTime.now()
-            .atZone(ZoneId.of("Asia/Kolkata"))
-            .truncatedTo(ChronoUnit.SECONDS)
-            .toString();
-
+  private Future<Void> updateAuditTable(RoutingContext context) {
+    JsonObject authInfo = (JsonObject) context.data().get("authInfo");
+    LOGGER.debug("auth info" + authInfo);
+    Promise<Void> promise = Promise.promise();
     JsonObject request = new JsonObject();
-    String resourceId = auditJson.getString(ID);
-    String primaryKey = UUID.randomUUID().toString().replace("-", "");
 
-    request.put(PRIMARY_KEY, primaryKey);
-    request.put(PROVIDER_ID, auditJson.getString(PROVIDER));
-    request.put(EPOCH_TIME, time);
-    request.put(ISO_TIME, isoTime);
-    request.put(USER_ID, auditJson.getValue(USER_ID));
-    request.put(ID, resourceId);
-    request.put(API, auditJson.getValue(API_ENDPOINT));
-    request.put(ORIGIN, ORIGIN_SERVER);
-    request.put(RESPONSE_SIZE, 0);
-    meteringService.insertMeteringValuesInRmq(
-        request,
-        handler -> {
-          if (handler.succeeded()) {
-            LOGGER.info("message published into rmq.");
-            promise.complete();
-          } else {
-            LOGGER.error("failed to publish msg into rmq.");
-            promise.complete();
-          }
-        });
+    catalogueService
+        .getCatItem(authInfo.getString(ID))
+        .onComplete(
+            relHandler -> {
+              if (relHandler.succeeded()) {
+                JsonObject cacheResult = relHandler.result();
+
+                String resourceGroup =
+                    cacheResult.containsKey("resourceGroup")
+                        ? cacheResult.getString("resourceGroup")
+                        : cacheResult.getString(ID);
+                ZonedDateTime zst = ZonedDateTime.now(ZoneId.of("Asia/Kolkata"));
+                String role = authInfo.getString(JSON_ROLE);
+                String drl = authInfo.getString(JSON_DRL);
+                if (role.equalsIgnoreCase("delegate") && drl != null) {
+                  request.put("delegatorId", authInfo.getString(JSON_DID));
+                } else {
+                  request.put("delegatorId", authInfo.getString(USER_ID));
+                }
+
+                String type =
+                    cacheResult.containsKey("resourceGroup") ? "RESOURCE" : "RESOURCE_GROUP";
+                long time = zst.toInstant().toEpochMilli();
+                String providerId = cacheResult.getString("provider");
+                String isoTime = zst.truncatedTo(ChronoUnit.SECONDS).toString();
+                request.put("resourceGroup", resourceGroup);
+                request.put(TYPE_KEY, type);
+                request.put(EPOCH_TIME, time);
+                request.put(ISO_TIME, isoTime);
+                request.put(USER_ID, authInfo.getValue(USER_ID));
+                request.put(ID, authInfo.getValue(ID));
+                request.put(API, authInfo.getValue(API_ENDPOINT));
+                request.put(RESPONSE_SIZE, 0);
+                request.put(PROVIDER_ID, providerId);
+                LOGGER.debug("metering log {} ", request.encodePrettily());
+                meteringService.insertMeteringValuesInRmq(
+                    request,
+                    handler -> {
+                      if (handler.succeeded()) {
+                        LOGGER.info("message published in RMQ.");
+                        promise.complete();
+                      } else {
+                        LOGGER.error("failed to publish message in RMQ.");
+                        promise.complete();
+                      }
+                    });
+              } else {
+                LOGGER.debug("Item not found and failed to call metering service");
+              }
+            });
 
     return promise.future();
   }

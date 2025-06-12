@@ -40,6 +40,7 @@ public class RabbitClient {
     Promise<JsonArray> promise = Promise.promise();
     String exchangeName = metaData.getString(EXCHANGE_NAME);
     String routingKey = metaData.getString(ROUTING_KEY);
+    String ownerId = metaData.getString("ownerId");
     JsonArray publishIds = new JsonArray();
 
     LOGGER.info("Sending each message separately to exchange: {}, with routing key: {}", exchangeName, routingKey);
@@ -50,8 +51,9 @@ public class RabbitClient {
         JsonObject jsonObject = (JsonObject) item;
         String publishID = java.util.UUID.randomUUID().toString();
         jsonObject.put("publishID", publishID);
+        jsonObject.put("provider",ownerId);
         publishIds.add(publishID);
-
+        
         // Publish each JSON object separately
         client.basicPublish(
                 exchangeName,
