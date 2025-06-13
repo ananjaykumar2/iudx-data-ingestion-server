@@ -42,6 +42,7 @@ pipeline {
                               enabledForFailure: true,
                               skipBlames: true,
                               qualityGates: [[threshold:4, type: 'TOTAL', unstable: false]],
+
                               tool: checkStyle(pattern: 'target/checkstyle-result.xml')
                             )
                             recordIssues(
